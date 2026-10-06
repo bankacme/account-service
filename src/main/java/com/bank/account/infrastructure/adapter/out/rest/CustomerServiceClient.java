@@ -14,6 +14,7 @@ import io.github.resilience4j.timelimiter.TimeLimiter;
 import io.github.resilience4j.timelimiter.TimeLimiterRegistry;
 import io.reactivex.rxjava3.core.Maybe;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cloud.client.loadbalancer.LoadBalanced;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -26,7 +27,7 @@ public class CustomerServiceClient implements CustomerLookupPort {
     private final CircuitBreaker circuitBreaker;
     private final TimeLimiter timeLimiter;
 
-    public CustomerServiceClient(WebClient.Builder builder,
+    public CustomerServiceClient(@LoadBalanced WebClient.Builder builder,
                                   @Value("${bank.clients.customer-service.base-url}") String baseUrl,
                                   CircuitBreakerRegistry circuitBreakerRegistry,
                                   TimeLimiterRegistry timeLimiterRegistry) {
