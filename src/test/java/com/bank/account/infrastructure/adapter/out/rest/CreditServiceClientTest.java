@@ -41,9 +41,10 @@ class CreditServiceClientTest {
                 .failureRateThreshold(50)
                 .waitDurationInOpenState(Duration.ofSeconds(5))
                 .build();
-        // Mismo comportamiento que los 2 s reales, más corto para que la prueba no espere.
+        // Los 2 s reales: con menos, la primera llamada (WebClient en frío) puede pasarse en una
+        // máquina lenta como el runner de GitHub y la prueba falla sin que el cliente esté mal.
         TimeLimiterConfig tlConfig = TimeLimiterConfig.custom()
-                .timeoutDuration(Duration.ofMillis(500))
+                .timeoutDuration(Duration.ofSeconds(2))
                 .cancelRunningFuture(true)
                 .build();
         client = new CreditServiceClient(WebClient.builder(), wireMock.baseUrl(),
@@ -92,7 +93,7 @@ class CreditServiceClientTest {
 
     @Test
     void aSlowResponseTimesOutAsDownstreamUnavailable() {
-        wireMock.stubFor(get(urlPathEqualTo(CARDS)).willReturn(okJson("[]").withFixedDelay(1500)));
+        wireMock.stubFor(get(urlPathEqualTo(CARDS)).willReturn(okJson("[]").withFixedDelay(2500)));
 
         lookup("cust-V").assertError(DownstreamServiceUnavailableException.class);
     }
