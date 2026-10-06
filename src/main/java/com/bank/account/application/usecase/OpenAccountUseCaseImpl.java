@@ -75,13 +75,23 @@ public class OpenAccountUseCaseImpl implements OpenAccountUseCase {
         return overdueDebtPort.hasOverdueDebt(command.customerId())
                 .flatMap(hasOverdueDebt -> accountRepositoryPort
                         .countActiveByCustomerAndType(command.customerId(), command.type())
-                        .flatMap(activeCount -> creditCardLookupPort.hasActiveCreditCard(command.customerId())
-                                .flatMap(hasActiveCreditCard -> resolveConditions(command, maybeCustomer)
-                                        .map(conditions -> new OpeningValidationContext(
+                        .flatMap(activeCount -> resolveConditions(command, maybeCustomer)
+                                .flatMap(conditions -> activeCreditCard(command.customerId(), conditions)
+                                        .map(hasActiveCreditCard -> new OpeningValidationContext(
                                                 command.customerId(), maybeCustomer.orElse(null), hasOverdueDebt,
                                                 command.type(), activeCount, command.holders(), command.signers(),
                                                 command.movementDayOfMonth(), hasActiveCreditCard, conditions,
                                                 command.openingAmount())))));
+    }
+
+    /**
+     * Solo se consulta credit-service si la condición lo exige (VIP ahorro, PYME corriente): abrir
+     * una cuenta STANDARD no depende de que credit-service esté arriba.
+     */
+    private Single<Boolean> activeCreditCard(String customerId, AccountConditions conditions) {
+        return conditions.requiresCreditCard()
+                ? creditCardLookupPort.hasActiveCreditCard(customerId)
+                : Single.just(false);
     }
 
     private Single<AccountConditions> resolveConditions(OpenAccountCommand command,

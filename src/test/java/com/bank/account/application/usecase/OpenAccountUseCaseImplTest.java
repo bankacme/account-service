@@ -3,6 +3,7 @@ package com.bank.account.application.usecase;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.bank.account.application.command.OpenAccountCommand;
+import com.bank.account.application.port.out.CreditCardLookupPort;
 import com.bank.account.application.usecase.TestAdapters.FixedCreditCardLookupPort;
 import com.bank.account.application.usecase.TestAdapters.NoOpOverdueDebtPort;
 import com.bank.account.application.usecase.TestAdapters.RecordingEventPublisherPort;
@@ -10,6 +11,7 @@ import com.bank.account.application.usecase.TestAdapters.StubCustomerLookupPort;
 import com.bank.account.domain.event.AccountCreated;
 import com.bank.account.domain.exception.BusinessRuleViolationException;
 import com.bank.account.domain.exception.CustomerNotFoundException;
+import com.bank.account.domain.exception.DownstreamServiceUnavailableException;
 import com.bank.account.domain.model.Account;
 import com.bank.account.domain.model.AccountConditions;
 import com.bank.account.domain.model.AccountParty;
@@ -22,6 +24,7 @@ import com.bank.account.domain.model.DocumentType;
 import com.bank.account.domain.model.Money;
 import com.bank.account.domain.service.AccountNumberGenerator;
 import com.bank.account.domain.service.AccountOpeningPolicy;
+import io.reactivex.rxjava3.core.Single;
 import io.reactivex.rxjava3.observers.TestObserver;
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -42,12 +45,72 @@ class OpenAccountUseCaseImplTest {
     private final AccountConditions savingsStandard = new AccountConditions(
             Money.zero(), Money.zero(), 10, 5, Money.of(new BigDecimal("2.00")), null, false);
 
+    private final AccountConditions savingsVip = new AccountConditions(
+            Money.zero(), Money.zero(), 10, 5, Money.of(new BigDecimal("2.00")), Money.of(new BigDecimal("500.00")),
+            true);
+
     private OpenAccountUseCaseImpl newUseCase(boolean hasActiveCreditCard) {
+        return newUseCase(new FixedCreditCardLookupPort(hasActiveCreditCard));
+    }
+
+    private OpenAccountUseCaseImpl newUseCase(CreditCardLookupPort creditCardLookupPort) {
         productRepository.seed(AccountProduct.create(AccountType.SAVINGS, CustomerProfile.STANDARD,
                 savingsStandard, clock));
         return new OpenAccountUseCaseImpl(customerLookupPort, new NoOpOverdueDebtPort(),
-                new FixedCreditCardLookupPort(hasActiveCreditCard), accountRepository, productRepository,
+                creditCardLookupPort, accountRepository, productRepository,
                 eventPublisherPort, new AccountOpeningPolicy(), new AccountNumberGenerator(), new Random(42), clock);
+    }
+
+    private OpenAccountCommand vipSavings(String customerId) {
+        customerLookupPort.with(new CustomerSnapshot(customerId, CustomerType.PERSONAL, CustomerProfile.VIP, "ACTIVE"));
+        productRepository.seed(AccountProduct.create(AccountType.SAVINGS, CustomerProfile.VIP, savingsVip, clock));
+        return new OpenAccountCommand(customerId, AccountType.SAVINGS, "Ahorro VIP", Money.of(new BigDecimal("600.00")),
+                null, List.of(), List.of());
+    }
+
+    @Test
+    void aVipSavingsAccountNeedsAnActiveCreditCard() {
+        OpenAccountUseCaseImpl useCase = newUseCase(false);
+        OpenAccountCommand command = vipSavings("cust-V");
+
+        useCase.execute(command).test().assertError(error -> error instanceof BusinessRuleViolationException e
+                && "CREDIT_CARD_REQUIRED".equals(e.getErrorCode()));
+        assertThat(eventPublisherPort.published()).isEmpty();
+    }
+
+    @Test
+    void aVipWithAnActiveCreditCardOpensWithVipConditions() {
+        OpenAccountUseCaseImpl useCase = newUseCase(true);
+        OpenAccountCommand command = vipSavings("cust-V");
+
+        TestObserver<Account> observer = useCase.execute(command).test();
+
+        observer.assertComplete();
+        assertThat(observer.values().get(0).conditions()).isEqualTo(savingsVip);
+        assertThat(observer.values().get(0).balance()).isEqualTo(Money.of(new BigDecimal("600.00")));
+    }
+
+    @Test
+    void aStandardAccountDoesNotAskCreditService() {
+        // Si credit-service estuviera caído, abrir una cuenta STANDARD debe seguir funcionando.
+        customerLookupPort.with(new CustomerSnapshot("cust-A", CustomerType.PERSONAL, CustomerProfile.STANDARD,
+                "ACTIVE"));
+        OpenAccountUseCaseImpl useCase = newUseCase(customerId -> Single.error(
+                new AssertionError("credit-service must not be called for a STANDARD account")));
+        OpenAccountCommand command = new OpenAccountCommand("cust-A", AccountType.SAVINGS, null, Money.zero(),
+                null, List.of(), List.of());
+
+        useCase.execute(command).test().assertComplete();
+    }
+
+    @Test
+    void creditServiceUnavailableIsPropagatedForAVip() {
+        OpenAccountUseCaseImpl useCase = newUseCase(customerId -> Single.error(
+                new DownstreamServiceUnavailableException("credit-service", new RuntimeException("down"))));
+        OpenAccountCommand command = vipSavings("cust-V");
+
+        useCase.execute(command).test().assertError(DownstreamServiceUnavailableException.class);
+        assertThat(eventPublisherPort.published()).isEmpty();
     }
 
     @Test
